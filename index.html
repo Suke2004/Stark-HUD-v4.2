@@ -3,18 +3,96 @@
 <head>
     <meta charset="UTF-8">
     <title>STARK HUD // MARK 85</title>
-
-    <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body { margin: 0; background: #000; overflow: hidden; font-family: 'Rajdhani', sans-serif; }
+        
+        /* CONTAINER */
+        #container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #050505;
+        }
 
-    <!-- Styles -->
-    <link rel="stylesheet" href="style.css">
+        /* LAYERS */
+        #input_video, #three_canvas, #biometric_canvas {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        #input_video {
+            transform: translate(-50%, -50%) scaleX(-1); 
+            z-index: 1;
+            opacity: 0.9; /* Slight dim to make HUD pop */
+            filter: contrast(1.1) saturate(1.1) grayscale(0.2); /* Cinematic look */
+        }
+
+        #three_canvas { z-index: 5; pointer-events: none; }
+        #biometric_canvas { z-index: 10; pointer-events: none; }
+
+        /* J.A.R.V.I.S. UI OVERLAY */
+        .hud-panel {
+            position: absolute;
+            z-index: 100;
+            color: #00f0ff;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            text-shadow: 0 0 8px #00f0ff;
+            background: rgba(0, 20, 40, 0.4);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+            backdrop-filter: blur(2px);
+        }
+
+        #ui-top-left {
+            top: 30px; left: 30px;
+            padding: 20px;
+            border-left: 4px solid #00f0ff;
+            border-top-left-radius: 10px;
+        }
+
+        #ui-top-right {
+            top: 30px; right: 30px;
+            padding: 20px;
+            text-align: right;
+            border-right: 4px solid #ffd700; /* Gold for Mark 85 */
+            border-top-right-radius: 10px;
+            color: #ffd700;
+            text-shadow: 0 0 8px #ffd700;
+        }
+
+        #ui-bottom {
+            bottom: 30px; width: 100%;
+            text-align: center;
+            background: transparent;
+            border: none;
+            pointer-events: none;
+        }
+
+        .label { font-size: 12px; opacity: 0.7; }
+        .value { font-size: 20px; font-weight: 700; margin-bottom: 5px; display: block; }
+        .alert { color: #ff0033; text-shadow: 0 0 10px #ff0033; }
+        
+        /* Scanline Effect */
+        .scanlines {
+            position: absolute; top:0; left:0; width:100vw; height:100vh;
+            background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0) 50%, rgba(0,0,0,0.1) 50%, rgba(0,0,0,0.1));
+            background-size: 100% 4px;
+            z-index: 99;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+    </style>
 </head>
 <body>
-
-    <!-- HUD PANELS -->
+    
     <div class="hud-panel" id="ui-top-left">
         <div class="label">SYSTEM STATUS</div>
         <div class="value" id="mode">BOOT_SEQUENCE...</div>
@@ -37,19 +115,439 @@
 
     <div class="scanlines"></div>
 
-    <!-- RENDER CONTAINER -->
     <div id="container">
         <video id="input_video" autoplay playsinline></video>
         <canvas id="three_canvas"></canvas>
         <canvas id="biometric_canvas"></canvas>
     </div>
 
-    <!-- Libraries -->
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
-    <!-- App Logic -->
-    <script src="app.js"></script>
+    <script>
+        // --- JARVIS CONFIGURATION ---
+        const COLORS = {
+            CYAN: "#00f0ff",
+            RED: "#ff0033",
+            GOLD: "#ffd700",
+            WHITE: "#ffffff"
+        };
+
+        const MESSAGES = {
+            BOOT: "IMPORTING PREFERENCES...",
+            READY: "J.A.R.V.I.S. ONLINE",
+            SCAN: "SCANNING BIOMETRICS...",
+            GRAB: "REPULSOR LOCK: ENGAGED",
+            BUILD_WAIT: "FABRICATION: SYNCING...",
+            BUILD_ACT: "FABRICATION: ACTIVE",
+            ERASE_WAIT: "TARGETING SYSTEMS...",
+            ERASE_ACT: "DESTRUCT MODE: ENGAGED",
+            RESET_WAIT: "PROTOCOL: CLEAN SLATE?",
+            RESET_DONE: "WORKSPACE CLEARED",
+            ROT_WAIT: "GYROSCOPIC SYNC...",
+            ROT_ACT: "MANIPULATION MODE"
+        };
+
+        // --- DOM ELEMENTS ---
+        const videoElement = document.getElementById('input_video');
+        const bioCanvas = document.getElementById('biometric_canvas');
+        const threeCanvas = document.getElementById('three_canvas');
+        const bioCtx = bioCanvas.getContext('2d');
+        const modeEl = document.getElementById('mode');
+        const countEl = document.getElementById('count');
+
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000); 
+        const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: true });
+        
+        const voxelGroup = new THREE.Group();
+        scene.add(voxelGroup);
+        const currentSketch = new THREE.Group();
+        voxelGroup.add(currentSketch);
+
+        const gridSize = 1.2; 
+        const placedVoxels = new Map();
+        
+        // Holographic Crosshair
+        const crosshair = new THREE.Mesh(
+            new THREE.BoxGeometry(gridSize, gridSize, gridSize),
+            new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.6 })
+        );
+        scene.add(crosshair);
+
+        // Lighting (Stark Lab Lighting)
+        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const sun = new THREE.PointLight(0x00f0ff, 1.5, 100);
+        sun.position.set(10, 10, 10);
+        scene.add(sun);
+        
+        const CAM_DIST = 20;
+        camera.position.z = CAM_DIST;
+
+        // --- OPTIMIZATION VARS ---
+        const _handWorldPos = new THREE.Vector3();
+        const _grabOffset = new THREE.Vector3();
+        const _worldPosCalc = new THREE.Vector3();
+        const _localPosCalc = new THREE.Vector3();
+        let visibleWidth = 10, visibleHeight = 10;
+
+        // --- STATE VARS ---
+        let smoothedLandmarks = { Left: [], Right: [] };
+        let isGrabbing = false, grabTimer = 0;
+        let isBuilding = false, buildTimer = 0;
+        let isErasing = false, eraseTimer = 0;
+        let resetTimer = 0, rotateTimer = 0; 
+        let startPinchPos = null, activeAxis = null;
+        let sketchKeys = new Set();
+        
+        const HOLD_THRESH = 500;   
+        const RESET_THRESH = 1200; // Slightly longer for safety
+        const pinchThreshold = 0.05; 
+
+        // --- RESIZE LOGIC ---
+        function onWindowResize() {
+            const windowAspect = window.innerWidth / window.innerHeight;
+            const vidW = videoElement.videoWidth || 1280;
+            const vidH = videoElement.videoHeight || 720;
+            const videoAspect = vidW / vidH;
+
+            let renderW, renderH;
+            if (windowAspect > videoAspect) {
+                renderH = window.innerHeight;
+                renderW = renderH * videoAspect;
+            } else {
+                renderW = window.innerWidth;
+                renderH = renderW / videoAspect;
+            }
+
+            [videoElement, bioCanvas, threeCanvas].forEach(el => {
+                el.style.width = `${renderW}px`;
+                el.style.height = `${renderH}px`;
+            });
+
+            bioCanvas.width = vidW;
+            bioCanvas.height = vidH;
+            renderer.setSize(renderW, renderH, false);
+            camera.aspect = videoAspect;
+            camera.updateProjectionMatrix();
+
+            const vFOV = THREE.MathUtils.degToRad(camera.fov);
+            visibleHeight = 2 * Math.tan(vFOV / 2) * CAM_DIST;
+            visibleWidth = visibleHeight * camera.aspect;
+        }
+        window.addEventListener('resize', onWindowResize);
+        videoElement.addEventListener('loadedmetadata', onWindowResize);
+
+        // --- STARK HUD DRAWING ---
+        function drawHUDCircle(ctx, x, y, progress, color) {
+            // Inner Ring
+            ctx.beginPath();
+            ctx.arc(x, y, 30, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
+            ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
+            
+            // Outer Decorative Ring (Stark Style)
+            ctx.beginPath();
+            ctx.arc(x, y, 38, 0, Math.PI * 2);
+            ctx.lineWidth = 1; ctx.strokeStyle = "rgba(0, 240, 255, 0.3)";
+            ctx.setLineDash([2, 8]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function drawStarkHand(ctx, landmarks, label) {
+            if (!smoothedLandmarks[label] || smoothedLandmarks[label].length === 0) {
+                smoothedLandmarks[label] = landmarks.map(p => ({...p}));
+            } else {
+                landmarks.forEach((p, i) => {
+                    smoothedLandmarks[label][i].x += (p.x - smoothedLandmarks[label][i].x) * 0.45;
+                    smoothedLandmarks[label][i].y += (p.y - smoothedLandmarks[label][i].y) * 0.45;
+                    smoothedLandmarks[label][i].z += (p.z - smoothedLandmarks[label][i].z) * 0.1; 
+                });
+            }
+            
+            const pts = smoothedLandmarks[label];
+            const w = ctx.canvas.width;
+            const h = ctx.canvas.height;
+            
+            // Tech Lines
+            ctx.shadowBlur = 15; ctx.shadowColor = COLORS.CYAN;
+            ctx.beginPath(); ctx.strokeStyle = "rgba(0, 240, 255, 0.5)"; ctx.lineWidth = 2;
+            const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],[0,5]];
+            CONNECTIONS.forEach(([a, b]) => {
+                ctx.moveTo((1 - pts[a].x) * w, pts[a].y * h); 
+                ctx.lineTo((1 - pts[b].x) * w, pts[b].y * h);
+            });
+            ctx.stroke();
+
+            // Joints
+            pts.forEach((pt, i) => {
+                const x = (1 - pt.x) * w; 
+                const y = pt.y * h;
+                
+                // Finger Tips
+                if ([4, 8, 12, 16, 20].includes(i)) {
+                    ctx.fillStyle = COLORS.CYAN; 
+                    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
+                } 
+                // Repulsor Node (Palm base - 0 or 9)
+                else if (i === 9) {
+                    ctx.beginPath();
+                    ctx.strokeStyle = COLORS.WHITE;
+                    ctx.lineWidth = 2;
+                    ctx.arc(x, y, 8, 0, Math.PI*2);
+                    ctx.stroke();
+                }
+            });
+        }
+
+        function getDist(p1, p2) { 
+            return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)); 
+        }
+
+        // --- LOGIC LOOP ---
+        function onResults(results) {
+            bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
+            crosshair.visible = false;
+            
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                isGrabbing = false; isBuilding = false; isErasing = false;
+                grabTimer = 0; buildTimer = 0; eraseTimer = 0;
+                resetTimer = 0; rotateTimer = 0;
+                // Idle message only if we weren't just resetting
+                if(modeEl.innerText !== MESSAGES.RESET_DONE) modeEl.innerText = MESSAGES.READY;
+                return;
+            }
+
+            let lHand = null, rHand = null;
+
+            results.multiHandedness.forEach((hand, idx) => {
+                const landmarks = results.multiHandLandmarks[idx];
+                drawStarkHand(bioCtx, landmarks, hand.label);
+                if(hand.label === 'Left') lHand = smoothedLandmarks['Left'];
+                if(hand.label === 'Right') rHand = smoothedLandmarks['Right'];
+            });
+
+            // --- GESTURE PROCESSING ---
+            if (lHand && rHand) {
+                const lFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
+                const rFist = rHand[8].y > rHand[6].y && rHand[12].y > rHand[10].y;
+                const lPalm = !lFist && lHand[12].y < lHand[10].y;
+                const rPalm = !rFist && rHand[12].y < rHand[10].y;
+
+                // CLEAN SLATE PROTOCOL
+                if (lFist && rFist) {
+                    rotateTimer = 0; 
+                    if (resetTimer < RESET_THRESH) {
+                        resetTimer += 16;
+                        drawHUDCircle(bioCtx, bioCanvas.width / 2, bioCanvas.height / 2, resetTimer/RESET_THRESH, COLORS.RED);
+                        modeEl.innerText = MESSAGES.RESET_WAIT;
+                        modeEl.classList.add('alert');
+                    } else {
+                        voxelGroup.position.set(0, 0, 0);
+                        voxelGroup.rotation.set(0, 0, 0);
+                        placedVoxels.forEach(v => voxelGroup.remove(v));
+                        placedVoxels.clear();
+                        countEl.innerText = "0";
+                        modeEl.innerText = MESSAGES.RESET_DONE;
+                        modeEl.classList.remove('alert');
+                    }
+                    return; 
+                } else {
+                    resetTimer = 0;
+                    modeEl.classList.remove('alert');
+                }
+
+                // MANIPULATION MODE
+                if (lPalm && rPalm) {
+                    if (rotateTimer < HOLD_THRESH) {
+                        rotateTimer += 16;
+                        drawHUDCircle(bioCtx, bioCanvas.width / 2, bioCanvas.height / 2, rotateTimer/HOLD_THRESH, COLORS.GOLD);
+                        modeEl.innerText = MESSAGES.ROT_WAIT;
+                    } else {
+                        modeEl.innerText = MESSAGES.ROT_ACT;
+                        voxelGroup.rotation.y += ((1-rHand[9].x) - (1-lHand[9].x) - 0.5) * 0.05;
+                        voxelGroup.rotation.x += (rHand[9].y - lHand[9].y) * 0.05;
+                    }
+                    return; 
+                } else rotateTimer = 0;
+            }
+
+            // LEFT HAND: REPULSOR GRIP
+            let lPinching = false;
+            if (lHand) {
+                const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
+                lPinching = getDist(lHand[4], lHand[8]) < pinchThreshold;
+                
+                const normX = (1 - lHand[9].x) - 0.5; 
+                const normY = 0.5 - lHand[9].y;
+                _handWorldPos.set(normX * visibleWidth, normY * visibleHeight, 0);
+
+                if (isFist) {
+                    if (grabTimer < HOLD_THRESH) {
+                        grabTimer += 16;
+                        drawHUDCircle(bioCtx, (1-lHand[9].x) * bioCanvas.width, lHand[9].y * bioCanvas.height, grabTimer/HOLD_THRESH, COLORS.GOLD);
+                    } else {
+                        if (!isGrabbing) { _grabOffset.copy(voxelGroup.position).sub(_handWorldPos); isGrabbing = true; }
+                        voxelGroup.position.copy(_handWorldPos).add(_grabOffset);
+                        modeEl.innerText = MESSAGES.GRAB;
+                        modeEl.style.color = COLORS.GOLD;
+                    }
+                } else { 
+                    isGrabbing = false; grabTimer = 0; 
+                    modeEl.style.color = COLORS.CYAN;
+                    if(!isBuilding && !isErasing) modeEl.innerText = MESSAGES.SCAN;
+                }
+            }
+
+            // RIGHT HAND: FABRICATION
+            if (rHand) {
+                const thumbTip = rHand[4], indexTip = rHand[8];
+                const pinchingNow = getDist(thumbTip, indexTip) < pinchThreshold;
+                const pointingNow = indexTip.y < rHand[6].y && rHand[12].y > rHand[10].y; 
+                const palmOpen = rHand[8].y < rHand[6].y && rHand[12].y < rHand[10].y;
+
+                const screenX = (1 - indexTip.x) * bioCanvas.width;
+                const screenY = indexTip.y * bioCanvas.height;
+
+                const normRX = (1 - indexTip.x) - 0.5;
+                const normRY = 0.5 - indexTip.y;
+                _worldPosCalc.set(normRX * visibleWidth, normRY * visibleHeight, -indexTip.z * 10);
+                
+                const localPos = voxelGroup.worldToLocal(_worldPosCalc.clone());
+                const gx = Math.round(localPos.x / gridSize) * gridSize;
+                const gy = Math.round(localPos.y / gridSize) * gridSize;
+                const gz = Math.round(localPos.z / gridSize) * gridSize;
+
+                // DESTRUCT
+                if (lPinching && pointingNow && !palmOpen) {
+                    buildTimer = 0;
+                    if (eraseTimer < HOLD_THRESH) {
+                        eraseTimer += 16;
+                        drawHUDCircle(bioCtx, screenX, screenY, eraseTimer/HOLD_THRESH, COLORS.RED);
+                        modeEl.innerText = MESSAGES.ERASE_WAIT;
+                        modeEl.classList.add('alert');
+                    } else {
+                        isErasing = true;
+                        const key = `${gx.toFixed(1)},${gy.toFixed(1)},${gz.toFixed(1)}`;
+                        if (placedVoxels.has(key)) {
+                            voxelGroup.remove(placedVoxels.get(key));
+                            placedVoxels.delete(key);
+                            countEl.innerText = placedVoxels.size;
+                        }
+                        modeEl.innerText = MESSAGES.ERASE_ACT;
+                    }
+                } 
+                // BUILD
+                else if (pinchingNow && !isGrabbing && !palmOpen) {
+                    eraseTimer = 0; modeEl.classList.remove('alert');
+                    if (buildTimer < HOLD_THRESH) {
+                        buildTimer += 16;
+                        drawHUDCircle(bioCtx, screenX, screenY, buildTimer/HOLD_THRESH, COLORS.CYAN);
+                        modeEl.innerText = MESSAGES.BUILD_WAIT;
+                    } else {
+                        if (!isBuilding) { 
+                            startPinchPos = { x: gx, y: gy, z: gz }; 
+                            sketchKeys.clear(); 
+                            isBuilding = true; activeAxis = null; 
+                        }
+                        else {
+                            const dx = Math.abs(gx - startPinchPos.x), dy = Math.abs(gy - startPinchPos.y), dz = Math.abs(gz - startPinchPos.z);
+                            if (!activeAxis && (dx > 0.1 || dy > 0.1 || dz > 0.1)) {
+                                if (dx >= dy && dx >= dz) activeAxis = 'x';
+                                else if (dy >= dx && dy >= dz) activeAxis = 'y';
+                                else activeAxis = 'z';
+                            }
+                            let tx = startPinchPos.x, ty = startPinchPos.y, tz = startPinchPos.z;
+                            if (activeAxis === 'x') tx = gx; else if (activeAxis === 'y') ty = gy; else if (activeAxis === 'z') tz = gz;
+                            else { tx=gx; ty=gy; tz=gz; }
+                            addSketchVoxel(tx, ty, tz);
+                        }
+                        modeEl.innerText = MESSAGES.BUILD_ACT;
+                    }
+                } 
+                else {
+                    if (palmOpen) {
+                        if (isBuilding) commitVoxels();
+                        isBuilding = false; isErasing = false;
+                        buildTimer = 0; eraseTimer = 0;
+                        modeEl.classList.remove('alert');
+                    }
+                }
+
+                if (isBuilding || buildTimer > 0 || isErasing || eraseTimer > 0) {
+                    crosshair.visible = true;
+                    _localPosCalc.set(gx, gy, gz);
+                    crosshair.position.copy(voxelGroup.localToWorld(_localPosCalc));
+                    crosshair.material.color.set((isErasing || eraseTimer > 0) ? 0xff0033 : 0x00f0ff);
+                }
+            }
+        }
+
+        function addSketchVoxel(x, y, z) {
+            const key = `${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)}`;
+            if (sketchKeys.has(key) || placedVoxels.has(key)) return;
+            
+            const mesh = new THREE.Mesh(
+                new THREE.BoxGeometry(gridSize*0.9, gridSize*0.9, gridSize*0.9), 
+                new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.5 })
+            );
+            mesh.position.set(x, y, z);
+            currentSketch.add(mesh);
+            sketchKeys.add(key);
+        }
+
+        function commitVoxels() {
+            while(currentSketch.children.length > 0) {
+                const f = currentSketch.children[0];
+                const key = `${f.position.x.toFixed(1)},${f.position.y.toFixed(1)},${f.position.z.toFixed(1)}`;
+                if(!placedVoxels.has(key)){
+                    const cube = createFinalCube(f.position.x, f.position.y, f.position.z);
+                    voxelGroup.add(cube);
+                    placedVoxels.set(key, cube);
+                }
+                currentSketch.remove(f);
+            }
+            countEl.innerText = placedVoxels.size;
+        }
+
+        function createFinalCube(x, y, z) {
+            const g = new THREE.BoxGeometry(gridSize*0.95, gridSize*0.95, gridSize*0.95);
+            // Arc Reactor Blue Material
+            const m = new THREE.MeshPhongMaterial({ 
+                color: 0x000a12, 
+                emissive: 0x00f0ff, 
+                emissiveIntensity: 0.5, 
+                transparent: true, 
+                opacity: 0.85,
+                shininess: 100
+            });
+            const mesh = new THREE.Mesh(g, m);
+            mesh.position.set(x, y, z);
+            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: 0x00f0ff })));
+            return mesh;
+        }
+
+        const hands = new Hands({locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.8, minTrackingConfidence: 0.8 });
+        hands.onResults(onResults);
+
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        cameraUtils.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            // Subtle floating animation for the group
+            if(placedVoxels.size > 0 && !isGrabbing && !isBuilding) {
+                voxelGroup.position.y += Math.sin(Date.now() * 0.001) * 0.005;
+            }
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
 </body>
 </html>
