@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>STARK HUD // MARK 85</title>
+    <title>STARK HUD // MARK 85 // HOLOGRAPHIC</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
@@ -31,8 +31,8 @@
         #input_video {
             transform: translate(-50%, -50%) scaleX(-1); 
             z-index: 1;
-            opacity: 0.9; /* Slight dim to make HUD pop */
-            filter: contrast(1.1) saturate(1.1) grayscale(0.2); /* Cinematic look */
+            opacity: 0.9;
+            filter: contrast(1.1) saturate(1.1) grayscale(0.2);
         }
 
         #three_canvas { z-index: 5; pointer-events: none; }
@@ -162,6 +162,9 @@
         const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000); 
         const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: true });
         
+        // IMPORTANT: For true holographic glow, we want additive blending handled by the renderer if possible
+        // but mostly we will handle it in materials.
+        
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
         const currentSketch = new THREE.Group();
@@ -177,14 +180,12 @@
         );
         scene.add(crosshair);
 
-        // Lighting (Stark Lab Lighting)
-        scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-        const sun = new THREE.PointLight(0x00f0ff, 1.5, 100);
-        sun.position.set(10, 10, 10);
-        scene.add(sun);
+        // Lighting (Still useful for the scene ambient)
+        scene.add(new THREE.AmbientLight(0xffffff, 0.5));
         
         const CAM_DIST = 20;
         camera.position.z = CAM_DIST;
+        const clock = new THREE.Clock();
 
         // --- OPTIMIZATION VARS ---
         const _handWorldPos = new THREE.Vector3();
@@ -203,7 +204,7 @@
         let sketchKeys = new Set();
         
         const HOLD_THRESH = 500;   
-        const RESET_THRESH = 1200; // Slightly longer for safety
+        const RESET_THRESH = 1200;
         const pinchThreshold = 0.05; 
 
         // --- RESIZE LOGIC ---
@@ -242,12 +243,10 @@
 
         // --- STARK HUD DRAWING ---
         function drawHUDCircle(ctx, x, y, progress, color) {
-            // Inner Ring
             ctx.beginPath();
             ctx.arc(x, y, 30, -Math.PI/2, (-Math.PI/2) + (Math.PI * 2 * progress));
             ctx.lineWidth = 4; ctx.strokeStyle = color; ctx.stroke();
             
-            // Outer Decorative Ring (Stark Style)
             ctx.beginPath();
             ctx.arc(x, y, 38, 0, Math.PI * 2);
             ctx.lineWidth = 1; ctx.strokeStyle = "rgba(0, 240, 255, 0.3)";
@@ -271,7 +270,6 @@
             const w = ctx.canvas.width;
             const h = ctx.canvas.height;
             
-            // Tech Lines
             ctx.shadowBlur = 15; ctx.shadowColor = COLORS.CYAN;
             ctx.beginPath(); ctx.strokeStyle = "rgba(0, 240, 255, 0.5)"; ctx.lineWidth = 2;
             const CONNECTIONS = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[9,10],[10,11],[11,12],[13,14],[14,15],[15,16],[0,17],[17,18],[18,19],[19,20],[5,9],[9,13],[13,17],[0,5]];
@@ -281,23 +279,17 @@
             });
             ctx.stroke();
 
-            // Joints
             pts.forEach((pt, i) => {
                 const x = (1 - pt.x) * w; 
                 const y = pt.y * h;
                 
-                // Finger Tips
                 if ([4, 8, 12, 16, 20].includes(i)) {
                     ctx.fillStyle = COLORS.CYAN; 
                     ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fill();
                 } 
-                // Repulsor Node (Palm base - 0 or 9)
                 else if (i === 9) {
-                    ctx.beginPath();
-                    ctx.strokeStyle = COLORS.WHITE;
-                    ctx.lineWidth = 2;
-                    ctx.arc(x, y, 8, 0, Math.PI*2);
-                    ctx.stroke();
+                    ctx.beginPath(); ctx.strokeStyle = COLORS.WHITE; ctx.lineWidth = 2;
+                    ctx.arc(x, y, 8, 0, Math.PI*2); ctx.stroke();
                 }
             });
         }
@@ -315,7 +307,6 @@
                 isGrabbing = false; isBuilding = false; isErasing = false;
                 grabTimer = 0; buildTimer = 0; eraseTimer = 0;
                 resetTimer = 0; rotateTimer = 0;
-                // Idle message only if we weren't just resetting
                 if(modeEl.innerText !== MESSAGES.RESET_DONE) modeEl.innerText = MESSAGES.READY;
                 return;
             }
@@ -336,7 +327,7 @@
                 const lPalm = !lFist && lHand[12].y < lHand[10].y;
                 const rPalm = !rFist && rHand[12].y < rHand[10].y;
 
-                // CLEAN SLATE PROTOCOL
+                // CLEAN SLATE
                 if (lFist && rFist) {
                     rotateTimer = 0; 
                     if (resetTimer < RESET_THRESH) {
@@ -359,7 +350,7 @@
                     modeEl.classList.remove('alert');
                 }
 
-                // MANIPULATION MODE
+                // ROTATE
                 if (lPalm && rPalm) {
                     if (rotateTimer < HOLD_THRESH) {
                         rotateTimer += 16;
@@ -374,7 +365,7 @@
                 } else rotateTimer = 0;
             }
 
-            // LEFT HAND: REPULSOR GRIP
+            // LEFT HAND: GRIP
             let lPinching = false;
             if (lHand) {
                 const isFist = lHand[8].y > lHand[6].y && lHand[12].y > lHand[10].y;
@@ -401,7 +392,7 @@
                 }
             }
 
-            // RIGHT HAND: FABRICATION
+            // RIGHT HAND: BUILD/ERASE
             if (rHand) {
                 const thumbTip = rHand[4], indexTip = rHand[8];
                 const pinchingNow = getDist(thumbTip, indexTip) < pinchThreshold;
@@ -420,7 +411,7 @@
                 const gy = Math.round(localPos.y / gridSize) * gridSize;
                 const gz = Math.round(localPos.z / gridSize) * gridSize;
 
-                // DESTRUCT
+                // ERASE
                 if (lPinching && pointingNow && !palmOpen) {
                     buildTimer = 0;
                     if (eraseTimer < HOLD_THRESH) {
@@ -491,7 +482,7 @@
             
             const mesh = new THREE.Mesh(
                 new THREE.BoxGeometry(gridSize*0.9, gridSize*0.9, gridSize*0.9), 
-                new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.5 })
+                new THREE.MeshBasicMaterial({ color: 0x00f0ff, wireframe: true, transparent: true, opacity: 0.3, blending: THREE.AdditiveBlending })
             );
             mesh.position.set(x, y, z);
             currentSketch.add(mesh);
@@ -512,20 +503,75 @@
             countEl.innerText = placedVoxels.size;
         }
 
+        // --- HOLOGRAPHIC SHADER MATERIAL ---
+        const hologramVertexShader = `
+            varying vec3 vNormal;
+            varying vec3 vViewPosition;
+            void main() {
+                vNormal = normalize(normalMatrix * normal);
+                vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                vViewPosition = -mvPosition.xyz;
+                gl_Position = projectionMatrix * mvPosition;
+            }
+        `;
+
+        const hologramFragmentShader = `
+            uniform vec3 glowColor;
+            uniform float time;
+            varying vec3 vNormal;
+            varying vec3 vViewPosition;
+
+            void main() {
+                vec3 normal = normalize(vNormal);
+                vec3 viewDir = normalize(vViewPosition);
+                
+                // Fresnel: High at edges, low in center
+                float dotProduct = dot(normal, viewDir);
+                float fresnel = pow(1.0 - abs(dotProduct), 2.0);
+
+                // Scanline effect: Moving sine wave
+                float scanline = sin(gl_FragCoord.y * 0.1 - time * 3.0) * 0.2 + 0.8;
+
+                // Combine for final alpha/glow
+                float alpha = fresnel * 0.6 + 0.1; 
+                vec3 finalColor = glowColor * scanline;
+
+                gl_FragColor = vec4(finalColor, alpha);
+            }
+        `;
+
         function createFinalCube(x, y, z) {
-            const g = new THREE.BoxGeometry(gridSize*0.95, gridSize*0.95, gridSize*0.95);
-            // Arc Reactor Blue Material
-            const m = new THREE.MeshPhongMaterial({ 
-                color: 0x000a12, 
-                emissive: 0x00f0ff, 
-                emissiveIntensity: 0.5, 
-                transparent: true, 
-                opacity: 0.85,
-                shininess: 100
+            const geometry = new THREE.BoxGeometry(gridSize*0.95, gridSize*0.95, gridSize*0.95);
+            
+            // Custom Shader Material for that "Light Projection" look
+            const material = new THREE.ShaderMaterial({
+                uniforms: {
+                    glowColor: { value: new THREE.Color(0x00f0ff) },
+                    time: { value: 0 }
+                },
+                vertexShader: hologramVertexShader,
+                fragmentShader: hologramFragmentShader,
+                transparent: true,
+                side: THREE.DoubleSide,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false // Holograms don't block light behind them
             });
-            const mesh = new THREE.Mesh(g, m);
+
+            const mesh = new THREE.Mesh(geometry, material);
             mesh.position.set(x, y, z);
-            mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(g), new THREE.LineBasicMaterial({ color: 0x00f0ff })));
+            
+            // Add a glowing wireframe on top to define the edges
+            const edges = new THREE.LineSegments(
+                new THREE.EdgesGeometry(geometry), 
+                new THREE.LineBasicMaterial({ 
+                    color: 0x00ffff, 
+                    transparent: true, 
+                    opacity: 0.8,
+                    blending: THREE.AdditiveBlending
+                })
+            );
+            mesh.add(edges);
+            
             return mesh;
         }
 
@@ -541,10 +587,21 @@
 
         function animate() {
             requestAnimationFrame(animate);
-            // Subtle floating animation for the group
+            
+            const t = clock.getElapsedTime();
+
+            // Update shader uniforms for all placed voxels
+            placedVoxels.forEach(mesh => {
+                if (mesh.material.uniforms) {
+                    mesh.material.uniforms.time.value = t;
+                }
+            });
+
+            // Float animation
             if(placedVoxels.size > 0 && !isGrabbing && !isBuilding) {
-                voxelGroup.position.y += Math.sin(Date.now() * 0.001) * 0.005;
+                voxelGroup.position.y += Math.sin(t) * 0.005;
             }
+            
             renderer.render(scene, camera);
         }
         animate();
