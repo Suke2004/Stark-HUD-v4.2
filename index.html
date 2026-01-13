@@ -162,9 +162,6 @@
         const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 1000); 
         const renderer = new THREE.WebGLRenderer({ canvas: threeCanvas, antialias: true, alpha: true });
         
-        // IMPORTANT: For true holographic glow, we want additive blending handled by the renderer if possible
-        // but mostly we will handle it in materials.
-        
         const voxelGroup = new THREE.Group();
         scene.add(voxelGroup);
         const currentSketch = new THREE.Group();
@@ -180,7 +177,6 @@
         );
         scene.add(crosshair);
 
-        // Lighting (Still useful for the scene ambient)
         scene.add(new THREE.AmbientLight(0xffffff, 0.5));
         
         const CAM_DIST = 20;
@@ -207,6 +203,11 @@
         const RESET_THRESH = 1200;
         const pinchThreshold = 0.05; 
 
+        // --- PARTICLE SYSTEM VARS ---
+        const activeExplosions = [];
+        const dustGeometryBase = new THREE.BufferGeometry();
+        // Pre-allocate geometry buffers if desired, but dynamic is easier for small bursts
+        
         // --- RESIZE LOGIC ---
         function onWindowResize() {
             const windowAspect = window.innerWidth / window.innerHeight;
@@ -298,6 +299,53 @@
             return Math.sqrt(Math.pow(p1.x-p2.x,2)+Math.pow(p1.y-p2.y,2)); 
         }
 
+        // --- NANOTECH DUST SYSTEM ---
+        function spawnNanotechDust(x, y, z) {
+            const particleCount = 40;
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const velocities = [];
+
+            for (let i = 0; i < particleCount; i++) {
+                // Spawn inside the cube volume
+                const spread = gridSize * 0.5;
+                positions.push(
+                    x + (Math.random() - 0.5) * spread * 2,
+                    y + (Math.random() - 0.5) * spread * 2,
+                    z + (Math.random() - 0.5) * spread * 2
+                );
+
+                // Explode outwards
+                velocities.push(
+                    (Math.random() - 0.5) * 0.15,
+                    (Math.random() - 0.5) * 0.15,
+                    (Math.random() - 0.5) * 0.15
+                );
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            
+            // Red/Gold mixed material for destruction effect
+            const material = new THREE.PointsMaterial({
+                color: 0xff0033, // Red for destruction
+                size: 0.15,
+                transparent: true,
+                opacity: 1.0,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+
+            const points = new THREE.Points(geometry, material);
+            voxelGroup.add(points); // Add to group so it moves with the hologram
+
+            activeExplosions.push({
+                mesh: points,
+                velocities: velocities,
+                age: 0,
+                maxAge: 1.0 // Lasts 1 second
+            });
+        }
+
         // --- LOGIC LOOP ---
         function onResults(results) {
             bioCtx.clearRect(0, 0, bioCanvas.width, bioCanvas.height);
@@ -336,9 +384,14 @@
                         modeEl.innerText = MESSAGES.RESET_WAIT;
                         modeEl.classList.add('alert');
                     } else {
+                        // Explode all blocks before clearing
+                        placedVoxels.forEach((val, key) => {
+                             spawnNanotechDust(val.position.x, val.position.y, val.position.z);
+                             voxelGroup.remove(val);
+                        });
+                        
                         voxelGroup.position.set(0, 0, 0);
                         voxelGroup.rotation.set(0, 0, 0);
-                        placedVoxels.forEach(v => voxelGroup.remove(v));
                         placedVoxels.clear();
                         countEl.innerText = "0";
                         modeEl.innerText = MESSAGES.RESET_DONE;
@@ -423,6 +476,9 @@
                         isErasing = true;
                         const key = `${gx.toFixed(1)},${gy.toFixed(1)},${gz.toFixed(1)}`;
                         if (placedVoxels.has(key)) {
+                            // --- TRIGGER DUST EFFECT HERE ---
+                            spawnNanotechDust(gx, gy, gz);
+                            
                             voxelGroup.remove(placedVoxels.get(key));
                             placedVoxels.delete(key);
                             countEl.innerText = placedVoxels.size;
@@ -589,6 +645,7 @@
             requestAnimationFrame(animate);
             
             const t = clock.getElapsedTime();
+            const delta = clock.getDelta();
 
             // Update shader uniforms for all placed voxels
             placedVoxels.forEach(mesh => {
@@ -596,6 +653,33 @@
                     mesh.material.uniforms.time.value = t;
                 }
             });
+
+            // Update Nanotech Particles
+            for (let i = activeExplosions.length - 1; i >= 0; i--) {
+                const expl = activeExplosions[i];
+                expl.age += 0.016; // Approx delta
+                
+                if (expl.age >= expl.maxAge) {
+                    voxelGroup.remove(expl.mesh);
+                    expl.mesh.geometry.dispose();
+                    expl.mesh.material.dispose();
+                    activeExplosions.splice(i, 1);
+                    continue;
+                }
+
+                // Move particles
+                const positions = expl.mesh.geometry.attributes.position.array;
+                for (let j = 0; j < expl.velocities.length; j += 3) {
+                    positions[j] += expl.velocities[j];     // x
+                    positions[j+1] += expl.velocities[j+1]; // y
+                    positions[j+2] += expl.velocities[j+2]; // z
+                }
+                expl.mesh.geometry.attributes.position.needsUpdate = true;
+                
+                // Fade out
+                expl.mesh.material.opacity = 1.0 - (expl.age / expl.maxAge);
+                expl.mesh.rotation.y += 0.01; // Slight swirl
+            }
 
             // Float animation
             if(placedVoxels.size > 0 && !isGrabbing && !isBuilding) {
